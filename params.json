@@ -1,0 +1,10 @@
+{
+  "atr_period": 14,
+  "st_multiplier": 2.5,
+  "ma_fast": 20,
+  "ma_slow": 60,
+  "chandelier_period": 22,
+  "chandelier_atr_mult": 4.0,
+  "fees": 0.001,
+  "history_start": "2018-01-01"
+}
