@@ -29,8 +29,9 @@ from config import (DATA_DIR, SECTORS, ensure_dirs, load_params, load_watchlist,
 from datafeed import get_daily, get_quotes, search_stock
 from signals import compute_frame, current_signal, sector_boost
 from prediction import load_predictions, load_accuracy
-from sector_rotation import load_sector_result
-from pair_scan import load_pair_result, scan_pair_numbers
+from pair_scan import (load_pair_result, scan_pair_numbers,
+                       load_compass_result, scan_compass_stocks,
+                       load_xinda_result, scan_xinda_stocks)
 
 app = Flask(__name__)
 
@@ -217,67 +218,6 @@ def _load_names() -> dict:
     return _name_cache
 
 
-_scan_cache: dict = {}
-
-
-SCAN_TOP_N = 5   # 全市场扫描只返回 TOP N
-
-@app.get("/api/market_scan")
-def api_market_scan() -> dict:
-    """全市场扫描：读取 data/ 下所有 CSV，计算信号并按分数排序，只返回 TOP N。"""
-    refresh = request.args.get("refresh", "0") == "1"
-    csvs = sorted(DATA_DIR.glob("*.csv"))
-    mtime_key = "|".join(f"{c.stem}:{int(c.stat().st_mtime)}" for c in csvs)
-    if not refresh and _scan_cache.get("key") == mtime_key:
-        wl = load_watchlist()
-        for s in _scan_cache["result"]:
-            s["in_wl"] = s["code"] in wl
-        return {"total": len(_scan_cache["result"]),
-                "stocks": _scan_cache["result"],
-                "scan_time": _scan_cache.get("time", "")}
-
-    p = load_params()
-    wl = load_watchlist()
-    names = _load_names()
-    preds = load_predictions()
-    pred_stocks = preds.get("stocks", {}) if preds else {}
-    acc_data = load_accuracy()
-    scored = []
-    for csv_path in csvs:
-        code = csv_path.stem
-        try:
-            df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
-            if len(df) < 120:
-                continue
-            frame = compute_frame(df, p)
-            sig = dict(current_signal(frame, p))
-            sig["code"] = code
-            sig["name"] = names.get(code, code)
-            sig["in_wl"] = code in wl
-            # 精细排序分：主排序=整数分数，副排序=距MA20百分比
-            close = sig.get("close") or 0
-            ma_fast = sig.get("ma_fast")
-            pct = ((close / ma_fast) - 1) * 100 if ma_fast and ma_fast > 0 else 0
-            sig["pct_from_ma20"] = round(pct, 2)
-            sig["sort_score"] = sig.get("score", 0) + pct * 0.001
-            pred_info = pred_stocks.get(code, {})
-            sig["pullback"] = pred_info.get("pullback")
-            sig["surge"] = pred_info.get("surge")
-            acc = acc_data.get(code, {})
-            sig["buy_correct"] = acc.get("buy_correct", 0)
-            sig["buy_fail"] = acc.get("buy_fail", 0)
-            sig["sell_correct"] = acc.get("sell_correct", 0)
-            sig["sell_fail"] = acc.get("sell_fail", 0)
-            scored.append(sig)
-        except Exception:
-            pass
-    scored.sort(key=lambda x: x.get("sort_score", 0), reverse=True)
-    top = scored[:SCAN_TOP_N]
-    scan_time = time.strftime("%Y-%m-%d %H:%M")
-    _scan_cache.update({"key": mtime_key, "result": top, "time": scan_time})
-    return {"total": len(top), "stocks": top, "scan_time": scan_time}
-
-
 @app.get("/api/pair_scan")
 def api_pair_scan() -> dict:
     """对子数扫描：返回上次扫描结果，refresh=1 时重新扫描。"""
@@ -286,27 +226,21 @@ def api_pair_scan() -> dict:
     return load_pair_result()
 
 
-@app.get("/api/sector_rotation")
-def api_sector_rotation() -> dict:
-    """板块轮动：返回上次扫描的推荐结果（冷门+低估值+龙头）+ 动态收益。"""
-    data = load_sector_result()
-    # 动态计算每只龙头的当前收益（基于最新 CSV 收盘价 vs entry_price）
-    for rec in data.get("recommendations", []):
-        for l in rec.get("leaders", []):
-            ep = l.get("entry_price")
-            if ep and ep > 0:
-                code = l.get("code", "")
-                csv_path = DATA_DIR / f"{code}.csv"
-                try:
-                    if csv_path.exists():
-                        df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
-                        if len(df) > 0:
-                            cur_close = float(df["close"].iloc[-1])
-                            l["current_price"] = round(cur_close, 3)
-                            l["hold_return"] = round((cur_close / ep - 1) * 100, 2)
-                except Exception:
-                    pass
-    return data
+@app.get("/api/compass_scan")
+def api_compass_scan() -> dict:
+    """指南针模式（空中加油/高位整理蓄势）扫描。"""
+    if request.args.get("refresh") == "1":
+        return scan_compass_stocks()
+    return load_compass_result()
+
+
+@app.get("/api/xinda_scan")
+def api_xinda_scan() -> dict:
+    """信达模式（突破加速/量价齐升）扫描。"""
+    if request.args.get("refresh") == "1":
+        return scan_xinda_stocks()
+    return load_xinda_result()
+
 
 
 # ---------------- 页面 ----------------
@@ -414,9 +348,9 @@ OVERVIEW_TPL = f"""<!DOCTYPE html>
 </div>
 <div class="tabs">
   <div class="tab active" onclick="switchTab('pair',event)">对子数 <span class="badge" id="pair-count"></span></div>
+  <div class="tab" onclick="switchTab('compass',event)">指南针模式 <span class="badge" id="compass-count"></span></div>
+  <div class="tab" onclick="switchTab('xinda',event)">信达模式 <span class="badge" id="xinda-count"></span></div>
   <div class="tab" onclick="switchTab('watchlist',event)">自选股 <span class="badge" id="wl-count"></span></div>
-  <div class="tab" onclick="switchTab('scan',event)">全市场TOP5 <span class="badge" id="scan-count"></span></div>
-  <div class="tab" onclick="switchTab('rotation',event)">板块轮动 <span class="badge" id="rot-count"></span></div>
 </div>
 <div id="tab-pair">
   <div class="scan-bar">
@@ -428,30 +362,38 @@ OVERVIEW_TPL = f"""<!DOCTYPE html>
     <span><b style="color:#00d4aa">●</b> AA+ 双对 <small>abb.cc</small></span>
     <span><b style="color:#6ea8fe">●</b> AB 镜像 <small>ab.ab</small></span>
   </div>
-  <h2 style="color:#f0b90b">★ 强支撑对子 <span style="font-size:13px;color:#6b7280;font-weight:400">（对子底出现后未跌破 → 主力强支撑，重点信号）</span></h2>
+  <h2 style="color:#f0b90b">★ 强支撑对子 <span style="font-size:13px;color:#6b7280;font-weight:400">（收盘形成且未破≥3天 → 主力强支撑，重点信号）</span></h2>
   <div id="tbl-strong-pairs"><div class="loading">点击标签加载数据...</div></div>
-  <h2>今日对子底 <span style="font-size:13px;color:#6b7280">（最低价出现对子数 → 主力底部精准控价）</span></h2>
-  <div id="tbl-pair-bottom"><div class="loading">点击标签加载数据...</div></div>
-  <h2>今日对子顶 <span style="font-size:13px;color:#6b7280">（最高价出现对子数 → 主力顶部精准出货）</span></h2>
-  <div id="tbl-pair-top"><div class="loading">点击标签加载数据...</div></div>
+</div>
+<div id="tab-compass" style="display:none">
+  <div class="scan-bar">
+    <span class="info" id="compass-info">点击「指南针模式」标签加载数据</span>
+    <button onclick="loadCompassScan(true)">重新扫描</button>
+  </div>
+  <div style="font-size:11px;color:#8a93a6;margin:6px 0 10px;display:flex;gap:16px;flex-wrap:wrap">
+    <span><b style="color:#f0b90b">●</b> 长期趋势向上（>MA60）</span>
+    <span><b style="color:#00d4aa">●</b> 近20日振幅≥8%</span>
+    <span><b style="color:#6ea8fe">●</b> 高位整理+长影线密集</span>
+  </div>
+  <h2 style="color:#f0b90b">★ 指南针模式（空中加油） <span style="font-size:13px;color:#6b7280;font-weight:400">（以300803指南针K线形态为模型，高位整理蓄势）</span></h2>
+  <div id="tbl-compass-stocks"><div class="loading">点击标签加载数据...</div></div>
+</div>
+<div id="tab-xinda" style="display:none">
+  <div class="scan-bar">
+    <span class="info" id="xinda-info">点击「信达模式」标签加载数据</span>
+    <button onclick="loadXindaScan(true)">重新扫描</button>
+  </div>
+  <div style="font-size:11px;color:#8a93a6;margin:6px 0 10px;display:flex;gap:16px;flex-wrap:wrap">
+    <span><b style="color:#f0b90b">●</b> 多头排列（Close>MA5>MA10>MA20）</span>
+    <span><b style="color:#00d4aa">●</b> 近5日累计涨幅≥10%</span>
+    <span><b style="color:#6ea8fe">●</b> 放量上涨（5日量≥1.5倍20日量）</span>
+  </div>
+  <h2 style="color:#f0b90b">★ 信达模式（突破加速） <span style="font-size:13px;color:#6b7280;font-weight:400">（以600657信达地产K线形态为模型，平台突破后量价齐升）</span></h2>
+  <div id="tbl-xinda-stocks"><div class="loading">点击标签加载数据...</div></div>
 </div>
 <div id="tab-watchlist" style="display:none">
   <h2>信号列表（按分数降序）</h2>
   <div id="tbl-sig"></div>
-</div>
-<div id="tab-scan" style="display:none">
-  <div class="scan-bar">
-    <span class="info" id="scan-info">点击「全市场TOP5」标签开始扫描</span>
-    <button onclick="loadScan(true)">重新扫描</button>
-  </div>
-  <div id="tbl-scan"><div class="loading">点击标签加载数据...</div></div>
-</div>
-<div id="tab-rotation" style="display:none">
-  <div class="scan-bar">
-    <span class="info" id="rot-info">点击「板块轮动」标签加载推荐</span>
-    <button onclick="loadRotation(true)">刷新数据</button>
-  </div>
-  <div id="tbl-rotation"><div class="loading">点击标签加载数据...</div></div>
 </div>
 <h2>操作守则</h2>
 <p class="sub">
@@ -573,13 +515,9 @@ let PAIR_DATA = null;
 let PAIR_LOADED = false;
 
 async function loadPairScan(force){{
-  const elB = document.getElementById('tbl-pair-bottom');
-  const elT = document.getElementById('tbl-pair-top');
   const info = document.getElementById('pair-info');
   if(force){{
-    elB.innerHTML = '<div class="loading">扫描全市场+历史验证中（约1~3分钟）...</div>';
-    elT.innerHTML = '';
-    document.getElementById('tbl-strong-pairs').innerHTML = '';
+    document.getElementById('tbl-strong-pairs').innerHTML = '<div class="loading">扫描全市场+历史验证中（约1~3分钟）...</div>';
     info.textContent = '扫描中...';
   }}
   try{{
@@ -588,13 +526,11 @@ async function loadPairScan(force){{
     PAIR_DATA = d;
     PAIR_LOADED = true;
     const sc = d.strong_pair_count||0;
-    const bc = d.pair_bottom_count||0;
-    const tc = d.pair_top_count||0;
-    document.getElementById('pair-count').textContent = sc || (bc + tc);
-    info.textContent = '★强支撑 ' + sc + ' 只 · 对子底 ' + bc + ' 只 · 对子顶 ' + tc + ' 只 · 扫描 ' + (d.total_stocks||0) + ' 只 · ' + (d.scan_time||'—');
+    document.getElementById('pair-count').textContent = sc;
+    info.textContent = '★强支撑(未破≥3天) ' + sc + ' 只 · 扫描 ' + (d.total_stocks||0) + ' 只 · ' + (d.scan_time||'—');
     renderPairScan();
   }}catch(e){{
-    elB.innerHTML = '<div class="loading">加载失败: '+e.message+'</div>';
+    document.getElementById('tbl-strong-pairs').innerHTML = '<div class="loading">加载失败: '+e.message+'</div>';
     info.textContent = '加载失败';
   }}
 }}
@@ -602,12 +538,9 @@ async function loadPairScan(force){{
 function renderPairScan(){{
   if(!PAIR_DATA){{
     document.getElementById('tbl-strong-pairs').innerHTML = '<div class="loading">暂无数据</div>';
-    document.getElementById('tbl-pair-bottom').innerHTML = '<div class="loading">暂无数据</div>';
     return;
   }}
   const strongs = PAIR_DATA.strong_pairs || [];
-  const bottoms = PAIR_DATA.pair_bottoms || [];
-  const tops = PAIR_DATA.pair_tops || [];
   const lvMap = {{
     'AAA': {{color:'#f0b90b', bg:'background:rgba(240,185,11,0.15)', label:'全对'}},
     'AA+': {{color:'#00d4aa', bg:'background:rgba(0,212,170,0.12)', label:'双对'}},
@@ -615,7 +548,8 @@ function renderPairScan(){{
   }};
 
   // ── 强支撑对子（重点信号） ──
-  const strongHeader = `<tr><th>#</th><th>代码</th><th>名称</th><th>支撑价</th><th>类型</th><th style="color:#f0b90b">未破天数</th><th>首次出现</th>
+  // ── 强支撑对子（重点信号） ──
+  const strongHeader = `<tr><th>#</th><th>代码</th><th>名称</th><th style="color:#f0b90b">分数</th><th>支撑价</th><th>类型</th><th style="color:#f0b90b">未破天数</th><th>首次出现</th>
     <th>现价</th><th>涨跌幅</th><th>换手率</th><th>成交额(亿)</th><th>操作</th></tr>`;
   function strongRowHtml(s, i){{
     const lv = s.pair_level||'';
@@ -630,10 +564,13 @@ function renderPairScan(){{
     const chgColor = s.change_pct!=null && s.change_pct>=0 ? '#e74c3c' : '#27ae60';
     const turnover = s.turnover!=null ? s.turnover.toFixed(2)+'%' : '—';
     const amt = s.amount!=null ? (s.amount/1e8).toFixed(2) : '—';
+    const score = s.score!=null ? s.score : 0;
+    const scoreColor = score>=200 ? '#f0b90b' : score>=150 ? '#e67e22' : score>=100 ? '#6ea8fe' : '#8a93a6';
     return `<tr>
       <td style="color:#6b7280;font-weight:700">${{i+1}}</td>
       <td><a href="/stock/${{s.code}}" style="color:#6ea8fe">${{s.code}}</a></td>
       <td style="font-weight:600">${{s.name}}</td>
+      <td style="font-weight:700;color:${{scoreColor}};font-size:14px;text-align:center">${{score}}</td>
       <td style="font-weight:700;color:${{lvInfo.color}};${{lvInfo.bg}};padding:3px 8px;border-radius:4px" title="${{s.pair_desc||''}}">${{pp}}</td>
       <td style="font-weight:700;color:${{lvInfo.color}}">${{lvInfo.label}}<span style="font-size:10px;opacity:0.7;margin-left:2px">${{s.pair_type||lv}}</span></td>
       <td style="font-weight:700;color:${{udColor}};${{udBg}};font-size:14px;padding:2px 6px;border-radius:3px;text-align:center">${{ud}}天</td>
@@ -647,51 +584,128 @@ function renderPairScan(){{
   }}
   let htmlS = `<table style="font-size:12px">${{strongHeader}}` +
     (strongs.length ? strongs.map((s,i)=>strongRowHtml(s,i)).join('') :
-      `<tr><td colspan="12" style="color:#6b7280;text-align:center;padding:20px">暂无强支撑对子</td></tr>`) +
+      `<tr><td colspan="13" style="color:#6b7280;text-align:center;padding:20px">暂无强支撑对子</td></tr>`) +
     `</table>`;
+  document.getElementById('tbl-strong-pairs').innerHTML = htmlS;
+}}
 
-  // ── 对子底 / 对子顶 ──
-  const header = `<tr><th>#</th><th>代码</th><th>名称</th><th>对子价</th><th>类型</th>
-    <th>收盘</th><th>最低</th><th>最高</th><th>涨跌幅</th><th>换手率</th><th>成交额(亿)</th><th>操作</th></tr>`;
+let COMPASS_DATA = null;
+let COMPASS_LOADED = false;
 
+async function loadCompassScan(force){{
+  const info = document.getElementById('compass-info');
+  if(force){{
+    document.getElementById('tbl-compass-stocks').innerHTML = '<div class="loading">扫描全市场中（约3~10分钟）...</div>';
+    info.textContent = '扫描中...';
+  }}
+  try{{
+    const url = '/api/compass_scan' + (force?'?refresh=1':'');
+    const d = await fetch(url).then(x=>x.json());
+    COMPASS_DATA = d;
+    COMPASS_LOADED = true;
+    const cnt = d.count||0;
+    document.getElementById('compass-count').textContent = cnt;
+    info.textContent = '指南针模式 ' + cnt + ' 只 · 扫描 ' + (d.total_stocks||0) + ' 只 · ' + (d.scan_time||'—');
+    renderCompassScan();
+  }}catch(e){{
+    document.getElementById('tbl-compass-stocks').innerHTML = '<div class="loading">加载失败: '+e.message+'</div>';
+    info.textContent = '加载失败';
+  }}
+}}
+
+function renderCompassScan(){{
+  if(!COMPASS_DATA){{
+    document.getElementById('tbl-compass-stocks').innerHTML = '<div class="loading">暂无数据</div>';
+    return;
+  }}
+  const stocks = COMPASS_DATA.stocks || [];
+  const header = `<tr><th>#</th><th>代码</th><th>名称</th><th>现价</th><th>涨跌幅</th><th>成交额(亿)</th>
+    <th>MA5</th><th>MA10</th><th>MA20</th><th>MA60</th><th>20日振幅</th><th>长影线日</th><th>操作</th></tr>`;
   function rowHtml(s, i){{
-    const lv = s.pair_level||'';
-    const lvInfo = lvMap[lv] || {{color:'#8a93a6', bg:'', label:''}};
-    const pp = s.pair_price!=null ? s.pair_price.toFixed(2) : '—';
     const close = s.price!=null ? s.price.toFixed(2) : '—';
-    const low = s.low!=null ? s.low.toFixed(2) : '—';
-    const high = s.high!=null ? s.high.toFixed(2) : '—';
     const chg = s.change_pct!=null ? (s.change_pct>=0?'+':'')+s.change_pct.toFixed(2)+'%' : '—';
     const chgColor = s.change_pct!=null && s.change_pct>=0 ? '#e74c3c' : '#27ae60';
-    const turnover = s.turnover!=null ? s.turnover.toFixed(2)+'%' : '—';
     const amt = s.amount!=null ? (s.amount/1e8).toFixed(2) : '—';
     return `<tr>
       <td style="color:#6b7280;font-weight:700">${{i+1}}</td>
       <td><a href="/stock/${{s.code}}" style="color:#6ea8fe">${{s.code}}</a></td>
-      <td>${{s.name}}</td>
-      <td style="font-weight:700;color:${{lvInfo.color}};${{lvInfo.bg}};padding:3px 8px;border-radius:4px" title="${{s.pair_desc||''}}">${{pp}}</td>
-      <td style="font-weight:700;color:${{lvInfo.color}}">${{lvInfo.label}}<span style="font-size:10px;opacity:0.7;margin-left:2px">${{s.pair_type||lv}}</span></td>
+      <td style="font-weight:600">${{s.name}}</td>
       <td>${{close}}</td>
-      <td style="color:#27ae60">${{low}}</td>
-      <td style="color:#e74c3c">${{high}}</td>
       <td style="color:${{chgColor}}">${{chg}}</td>
-      <td style="color:#8a93a6">${{turnover}}</td>
       <td style="color:#8a93a6">${{amt}}</td>
+      <td style="color:#f0b90b">${{s.sma5!=null?s.sma5.toFixed(2):'—'}}</td>
+      <td style="color:#00d4aa">${{s.sma10!=null?s.sma10.toFixed(2):'—'}}</td>
+      <td style="color:#6ea8fe">${{s.sma20!=null?s.sma20.toFixed(2):'—'}}</td>
+      <td style="color:#8a93a6">${{s.sma60!=null?s.sma60.toFixed(2):'—'}}</td>
+      <td style="color:#f0b90b;font-weight:700">${{s.amplitude_20d!=null?s.amplitude_20d.toFixed(2):'—'}}%</td>
+      <td style="color:#00d4aa">${{s.long_shadow_days!=null?s.long_shadow_days:'—'}}</td>
       <td><button class="scan-add" onclick="quickAdd('${{s.code}}','${{s.name}}')">+自选</button></td>
     </tr>`;
   }}
+  let html = `<table style="font-size:12px">${{header}}` +
+    (stocks.length ? stocks.map((s,i)=>rowHtml(s,i)).join('') :
+      `<tr><td colspan="13" style="color:#6b7280;text-align:center;padding:20px">暂无符合条件的股票</td></tr>`) +
+    `</table>`;
+  document.getElementById('tbl-compass-stocks').innerHTML = html;
+}}
 
-  let htmlB = `<table style="font-size:12px">${{header}}` +
-    (bottoms.length ? bottoms.map((s,i)=>rowHtml(s,i)).join('') :
-      `<tr><td colspan="12" style="color:#6b7280;text-align:center;padding:20px">暂无对子底股票</td></tr>`) +
+// ── 信达模式扫描 ──
+let XINDA_DATA = null, XINDA_LOADED = false;
+async function loadXindaScan(force){{
+  const info = document.getElementById('xinda-info');
+  if(force){{
+    document.getElementById('tbl-xinda-stocks').innerHTML = '<div class="loading">扫描全市场中（约3~10分钟）...</div>';
+    info.textContent = '扫描中...';
+  }}
+  try{{
+    const url = '/api/xinda_scan' + (force?'?refresh=1':'');
+    const d = await fetch(url).then(x=>x.json());
+    XINDA_DATA = d;
+    XINDA_LOADED = true;
+    const cnt = d.count||0;
+    document.getElementById('xinda-count').textContent = cnt;
+    info.textContent = '信达模式 ' + cnt + ' 只 · 扫描 ' + (d.total_stocks||0) + ' 只 · ' + (d.scan_time||'—');
+    renderXindaScan();
+  }}catch(e){{
+    document.getElementById('tbl-xinda-stocks').innerHTML = '<div class="loading">加载失败: '+e.message+'</div>';
+    info.textContent = '加载失败';
+  }}
+}}
+function renderXindaScan(){{
+  if(!XINDA_DATA){{
+    document.getElementById('tbl-xinda-stocks').innerHTML = '<div class="loading">暂无数据</div>';
+    return;
+  }}
+  let stocks = XINDA_DATA.stocks||[];
+  const header = `<tr style="color:#8a93a6;font-size:11px">
+    <th>#</th><th>代码</th><th>名称</th><th>现价</th><th>涨跌%</th><th>成交额(亿)</th>
+    <th>MA5</th><th>MA10</th><th>MA20</th><th>5日涨幅%</th><th>阳线天</th>
+    <th>20日振幅%</th><th>量比</th><th>操作</th></tr>`;
+  function rowHtml(s,i){{
+    const chg = s.change_pct!=null?s.change_pct.toFixed(2):'—';
+    const amt = s.amount!=null?(s.amount/1e8).toFixed(2):'—';
+    return `<tr>
+      <td>${{i+1}}</td>
+      <td><a href="/stock/${{s.code}}" style="color:#6ea8fe">${{s.code}}</a></td>
+      <td>${{s.name}}</td>
+      <td style="color:#f0b90b;font-weight:700">${{s.price!=null?s.price.toFixed(2):'—'}}</td>
+      <td style="color:${{chg>=0?'#00d4aa':'#f6465d'}}">${{chg}}%</td>
+      <td>${{amt}}</td>
+      <td style="color:#f0b90b">${{s.sma5!=null?s.sma5.toFixed(2):'—'}}</td>
+      <td style="color:#00d4aa">${{s.sma10!=null?s.sma10.toFixed(2):'—'}}</td>
+      <td style="color:#6ea8fe">${{s.sma20!=null?s.sma20.toFixed(2):'—'}}</td>
+      <td style="color:#f0b90b;font-weight:700">${{s.gain_5d!=null?s.gain_5d.toFixed(2):'—'}}%</td>
+      <td style="color:#00d4aa">${{s.up_days!=null?s.up_days:'—'}}/5</td>
+      <td style="color:#6ea8fe">${{s.amplitude_20d!=null?s.amplitude_20d.toFixed(2):'—'}}%</td>
+      <td style="color:#f0b90b">${{s.vol_ratio!=null?s.vol_ratio.toFixed(2):'—'}}x</td>
+      <td><button class="scan-add" onclick="quickAdd('${{s.code}}','${{s.name}}')">+自选</button></td>
+    </tr>`;
+  }}
+  let html = `<table style="font-size:12px">${{header}}` +
+    (stocks.length ? stocks.map((s,i)=>rowHtml(s,i)).join('') :
+      `<tr><td colspan="14" style="color:#6b7280;text-align:center;padding:20px">暂无符合条件的股票</td></tr>`) +
     `</table>`;
-  let htmlT = `<table style="font-size:12px">${{header}}` +
-    (tops.length ? tops.map((s,i)=>rowHtml(s,i)).join('') :
-      `<tr><td colspan="12" style="color:#6b7280;text-align:center;padding:20px">暂无对子顶股票</td></tr>`) +
-    `</table>`;
-  document.getElementById('tbl-strong-pairs').innerHTML = htmlS;
-  document.getElementById('tbl-pair-bottom').innerHTML = htmlB;
-  document.getElementById('tbl-pair-top').innerHTML = htmlT;
+  document.getElementById('tbl-xinda-stocks').innerHTML = html;
 }}
 
 // ── Tab 切换 ──
@@ -699,179 +713,26 @@ function switchTab(tab,evt){{
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   evt.currentTarget.classList.add('active');
   document.getElementById('tab-pair').style.display = tab==='pair'?'block':'none';
+  document.getElementById('tab-compass').style.display = tab==='compass'?'block':'none';
+  document.getElementById('tab-xinda').style.display = tab==='xinda'?'block':'none';
   document.getElementById('tab-watchlist').style.display = tab==='watchlist'?'block':'none';
-  document.getElementById('tab-scan').style.display = tab==='scan'?'block':'none';
-  document.getElementById('tab-rotation').style.display = tab==='rotation'?'block':'none';
   if(tab==='pair' && !PAIR_LOADED) loadPairScan(false);
-  if(tab==='scan' && !SCAN_LOADED) loadScan(false);
-  if(tab==='rotation' && !ROT_LOADED) loadRotation(false);
+  if(tab==='compass' && !COMPASS_LOADED) loadCompassScan(false);
+  if(tab==='xinda' && !XINDA_LOADED) loadXindaScan(false);
 }}
-// ── 全市场扫描（只展示 TOP 5）──
-let ALL_SCAN = [];
-let SCAN_LOADED = false;
-
-async function loadScan(force){{
-  const el = document.getElementById('tbl-scan');
-  const info = document.getElementById('scan-info');
-  el.innerHTML = '<div class="loading">扫描中，请稍候（约3~8秒）...</div>';
-  info.textContent = '扫描中...';
-  try{{
-    const url = '/api/market_scan' + (force?'?refresh=1':'');
-    const d = await fetch(url).then(x=>x.json());
-    ALL_SCAN = d.stocks || [];
-    SCAN_LOADED = true;
-    document.getElementById('scan-count').textContent = d.total;
-    info.textContent = 'TOP ' + d.total + ' · 扫描时间 ' + (d.scan_time||'—');
-    renderScan();
-  }}catch(e){{
-    el.innerHTML = '<div class="loading">扫描失败: '+e.message+'</div>';
-    info.textContent = '扫描失败';
-  }}
-}}
-
-function renderScan(){{
-  let html = `<table>
-    <tr><th>#</th><th>分数</th><th>代码</th><th>名称</th><th>收盘</th>
-        <th>距MA20</th><th>ATR%</th><th>回调买入</th><th>冲高卖出</th><th>买对</th><th>买错</th><th>卖对</th><th>卖错</th>
-        <th>动作</th><th>仓位</th>
-        <th style="text-align:left">依据</th><th>操作</th></tr>` +
-    ALL_SCAN.map((s,i)=>{{
-      const a = s.action, c = C[a]||'#888';
-      const sc = s.score||0, scColor = sc>=70?'#27ae60':sc>=40?'#f0b90b':'#6b7280';
-      const pct = s.pct_from_ma20!=null ? (s.pct_from_ma20>=0?'+':'')+s.pct_from_ma20.toFixed(1)+'%' : '—';
-      const pctColor = s.pct_from_ma20!=null && s.pct_from_ma20>=0 ? '#e74c3c' : '#27ae60';
-      const atr = s.atr_pct!=null ? s.atr_pct.toFixed(2)+'%' : '—';
-      const pull = s.pullback;
-      const surge = s.surge;
-      const bc = s.buy_correct || 0;
-      const bf = s.buy_fail || 0;
-      const sc2 = s.sell_correct || 0;
-      const sf = s.sell_fail || 0;
-      const wl = s.in_wl;
-      const addBtn = wl ? '<button class="scan-add added">已加</button>' :
-        `<button class="scan-add" onclick="quickAdd('${{s.code}}','${{s.name}}')">+自选</button>`;
-      return `<tr>
-        <td style="color:#6b7280;font-weight:700">${{i+1}}</td>
-        <td style="font-weight:700;color:${{scColor}}">${{sc}}</td>
-        <td><a href="/stock/${{s.code}}" style="color:#6ea8fe">${{s.code}}</a></td>
-        <td>${{s.name}}</td>
-        <td>${{s.close}}</td>
-        <td style="color:${{pctColor}}">${{pct}}</td>
-        <td style="color:#8a93a6">${{atr}}</td>
-        <td>${{pull!=null ? '<span class="pred-pull">'+pull.toFixed(2)+'</span>' : '<span class="pred-none">—</span>'}}</td>
-        <td>${{surge!=null ? '<span class="pred-surge">'+surge.toFixed(2)+'</span>' : '<span class="pred-none">—</span>'}}</td>
-        <td style="color:#27ae60;font-weight:700">${{bc}}</td>
-        <td style="color:#e74c3c;font-weight:700">${{bf}}</td>
-        <td style="color:#27ae60;font-weight:700">${{sc2}}</td>
-        <td style="color:#e74c3c;font-weight:700">${{sf}}</td>
-        <td><span class="act" style="background:${{c}}">${{L[a]||a}}</span></td>
-        <td>${{s.state_text||'—'}}</td>
-        <td style="text-align:left;font-size:12px;color:#8a93a6;max-width:280px">${{s.reason||''}}</td>
-        <td>${{addBtn}}</td>
-      </tr>`;}}).join('') + `</table>`;
-  document.getElementById('tbl-scan').innerHTML = html;
-}}
-
-async function quickAdd(code, name){{
   if(!confirm('添加 ' + code + ' ' + name + ' 到自选？')) return;
   try{{
     const r = await fetch('/api/watchlist', {{method:'POST',
       headers:{{'Content-Type':'application/json'}},
       body: JSON.stringify({{code, name}})}}).then(x=>x.json());
     if(r.ok){{
-      ALL_SCAN.forEach(s=>{{ if(s.code===code) s.in_wl=true; }});
-      renderScan();
+      alert('已添加到自选');
     }} else {{
       alert('失败：' + r.msg);
     }}
   }}catch(e){{
     alert('网络错误：' + e.message);
   }}
-}}
-
-// ── 板块轮动 ──
-let ROT_DATA = null;
-let ROT_LOADED = false;
-
-async function loadRotation(force){{
-  const el = document.getElementById('tbl-rotation');
-  const info = document.getElementById('rot-info');
-  el.innerHTML = '<div class="loading">加载板块轮动数据...</div>';
-  info.textContent = '加载中...';
-  try{{
-    const d = await fetch('/api/sector_rotation').then(x=>x.json());
-    ROT_DATA = d;
-    ROT_LOADED = true;
-    const recs = d.recommendations || [];
-    document.getElementById('rot-count').textContent = recs.length;
-    info.textContent = '推荐 ' + recs.length + ' 个板块 · 共扫描 ' + (d.total_sectors||0) +
-      ' 个行业 · ' + (d.scan_time||'—');
-    renderRotation();
-  }}catch(e){{
-    el.innerHTML = '<div class="loading">加载失败: '+e.message+'</div>';
-    info.textContent = '加载失败';
-  }}
-}}
-
-function renderRotation(){{
-  if(!ROT_DATA || !ROT_DATA.recommendations || ROT_DATA.recommendations.length===0){{
-    document.getElementById('tbl-rotation').innerHTML =
-      '<div class="loading">暂无板块轮动推荐数据。请点击「刷新数据」或在服务器执行 sector_rotation.py 扫描。</div>';
-    return;
-  }}
-  const recs = ROT_DATA.recommendations;
-  const ACTION_MAP = {{'BUY':('买入','#2980b9'),'SELL':('卖出','#e74c3c'),'LOCK':('锁利','#f39c12'),'HOLD':('持有','#27ae60'),'WAIT':('等待','#6b7280'),'PIVOT':('补涨','#e67e22')}};
-  let html = `<table style="font-size:12px">
-    <tr><th>#</th><th>板块</th><th>综合分</th><th>冷度</th><th>估值</th>
-        <th>PE</th><th>PB</th><th>涨跌幅</th>
-        <th>龙头代码</th><th>龙头名称</th><th>龙头分</th><th>技术面</th><th>距MA120</th>
-        <th>动作</th><th>仓位</th><th>依据</th><th>持有收益</th><th>操作</th></tr>` +
-    recs.map((r,i)=>{{
-      const ts = r.total_score||0, tsColor = ts>=70?'#27ae60':ts>=50?'#f0b90b':'#6b7280';
-      const cs = r.cold_score||0, vs = r.value_score||0;
-      const pe = r.pe!=null ? r.pe.toFixed(1) : '—';
-      const pb = r.pb!=null ? r.pb.toFixed(2) : '—';
-      const chg = r.change_pct!=null ? (r.change_pct>=0?'+':'')+r.change_pct.toFixed(2)+'%' : '—';
-      const chgColor = r.change_pct!=null && r.change_pct>=0 ? '#e74c3c' : '#27ae60';
-      const leaders = r.leaders || [];
-      if(leaders.length===0){{
-        return `<tr style="border-top:2px solid #262b3b"><td style="color:#6b7280">${{i+1}}</td>
-          <td colspan="16" style="color:#6b7280">暂无龙头</td></tr>`;
-      }}
-      const l = leaders[0];
-      const ls = l.leader_score||0, lsColor = ls>=70?'#27ae60':ls>=50?'#f0b90b':'#6b7280';
-      const tech = l.tech_score||0, techColor = tech>=60?'#27ae60':tech>=40?'#f0b90b':'#e74c3c';
-      const ma120 = l.pct_from_ma120!=null ? (l.pct_from_ma120>=0?'+':'')+l.pct_from_ma120.toFixed(1)+'%' : '—';
-      const act = l.action||'—';
-      const actMeta = ACTION_MAP[act] || ['—','#888'];
-      const stateT = l.state_text||'—';
-      const reason = l.reason ? l.reason.substring(0,30) : '—';
-      const hr = l.hold_return!=null ? (l.hold_return>=0?'+':'')+l.hold_return.toFixed(2)+'%' : '待开始';
-      const hrColor = l.hold_return!=null ? (l.hold_return>=0?'#e74c3c':'#27ae60') : '#f0b90b';
-      const entryInfo = l.entry_price!=null ? '入场:'+l.entry_price : '下周一入场';
-      const addBtn = `<button class="scan-add" onclick="quickAdd('${{l.code}}','${{l.name}}')">+自选</button>`;
-      return `<tr style="border-top:2px solid #262b3b">
-        <td style="color:#6b7280;font-weight:700">${{i+1}}</td>
-        <td style="font-weight:700;color:#d8dce6">${{r.sector}}</td>
-        <td style="font-weight:700;color:${{tsColor}}">${{ts.toFixed(1)}}</td>
-        <td style="color:#8a93a6">${{cs.toFixed(1)}}</td>
-        <td style="color:#8a93a6">${{vs.toFixed(1)}}</td>
-        <td>${{pe}}</td>
-        <td>${{pb}}</td>
-        <td style="color:${{chgColor}}">${{chg}}</td>
-        <td><a href="/stock/${{l.code}}" style="color:#6ea8fe">${{l.code}}</a></td>
-        <td>${{l.name}}</td>
-        <td style="font-weight:700;color:${{lsColor}}">${{ls.toFixed(1)}}</td>
-        <td style="font-weight:700;color:${{techColor}}">${{tech.toFixed(1)}}</td>
-        <td style="color:#8a93a6">${{ma120}}</td>
-        <td style="font-weight:700;color:${{actMeta[1]}}">${{actMeta[0]}}</td>
-        <td style="color:#8a93a6">${{stateT}}</td>
-        <td style="text-align:left;color:#8a93a6;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${{l.reason||''}}">${{reason}}</td>
-        <td style="font-weight:700;color:${{hrColor}}" title="${{entryInfo}}">${{hr}}</td>
-        <td>${{addBtn}}</td>
-      </tr>`;
-    }}).join('') + `</table>`;
-  document.getElementById('tbl-rotation').innerHTML = html;
 }}
 
 // 默认加载对子数（首页签）

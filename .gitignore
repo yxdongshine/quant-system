@@ -5,6 +5,11 @@ data/predictions.json
 data/pair_scan.json
 data/sector_rotation.json
 data/market_scan.json
+data/ma_scan.json
+data/compass_scan.json
+data/xinda_scan.json
+data/sector_list.json
+data/prediction_accuracy.json
 
 # Logs
 logs/
@@ -14,6 +19,31 @@ reports/
 
 # Temporary scripts
 _*.py
+
+# Debug / test / utility scripts (not part of core project)
+test_*.py
+check_*.py
+debug_*.py
+kill_*.py
+run_*.py
+wait_*.py
+start_*.py
+analyze_*.py
+final_*.py
+verify_*.py
+upload_*.py
+trigger_*.py
+rerun_*.py
+diagnose_*.py
+create_minimal_*.py
+compare_*.py
+market_scan_local.py
+
+# SSH / deploy tools (local only)
+known_hosts.txt
+yes.txt
+plink.exe
+pscp.exe
 
 # Python
 __pycache__/

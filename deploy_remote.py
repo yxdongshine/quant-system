@@ -39,7 +39,32 @@ def main():
     print(f"==> 连接 {USER}@{HOST}:{PORT} ...")
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(HOST, port=PORT, username=USER, password=PASS, timeout=15)
+    # 优先尝试本地 SSH 私钥，失败再用密码
+    key_file = r"C:\Users\Administrator\.ssh\id_rsa_ecommerce"
+    pkey = None
+    if os.path.exists(key_file):
+        try:
+            pkey = paramiko.RSAKey.from_private_key_file(key_file)
+        except Exception:
+            try:
+                pkey = paramiko.Ed25519Key.from_private_key_file(key_file)
+            except Exception:
+                pass
+    connected = False
+    if pkey:
+        try:
+            ssh.connect(HOST, port=PORT, username=USER, pkey=pkey, timeout=15)
+            connected = True
+        except Exception:
+            pass
+    if not connected:
+        try:
+            ssh.connect(HOST, port=PORT, username=USER, password=PASS, timeout=15)
+            connected = True
+        except Exception as e:
+            print(f"    SSH 连接失败: {e}")
+            ssh.close()
+            sys.exit(1)
     print("    SSH 连接成功")
 
     # 1) 查找远程 quant-system 目录
