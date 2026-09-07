@@ -805,7 +805,7 @@ function switchTab(tab,evt){{
   if(tab==='xinda' && !XINDA_LOADED) loadXindaScan(false);
   if(tab==='bull' && !BULL_LOADED) loadBullHunter(false);
 }}
-}}
+async function quickAdd(code, name){{
   if(!confirm('添加 ' + code + ' ' + name + ' 到自选？')) return;
   try{{
     const r = await fetch('/api/watchlist', {{method:'POST',
