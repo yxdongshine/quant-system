@@ -628,9 +628,9 @@ async function loadCompassScan(force){{
     const d = await fetch(url).then(x=>x.json());
     COMPASS_DATA = d;
     COMPASS_LOADED = true;
-    const cnt = d.count||0;
-    document.getElementById('compass-count').textContent = cnt;
-    info.textContent = '指南针模式 ' + cnt + ' 只 · 扫描 ' + (d.total_stocks||0) + ' 只 · ' + (d.scan_time||'—');
+    const shown = (d.stocks||[]).length;
+    document.getElementById('compass-count').textContent = shown;
+    info.textContent = '指南针模式 TOP ' + shown + '（共' + (d.count||0) + '只达标）· ' + (d.scan_time||'—');
     renderCompassScan();
   }}catch(e){{
     document.getElementById('tbl-compass-stocks').innerHTML = '<div class="loading">加载失败: '+e.message+'</div>';
@@ -688,9 +688,9 @@ async function loadXindaScan(force){{
     const d = await fetch(url).then(x=>x.json());
     XINDA_DATA = d;
     XINDA_LOADED = true;
-    const cnt = d.count||0;
-    document.getElementById('xinda-count').textContent = cnt;
-    info.textContent = '信达模式 ' + cnt + ' 只 · 扫描 ' + (d.total_stocks||0) + ' 只 · ' + (d.scan_time||'—');
+    const shown = (d.stocks||[]).length;
+    document.getElementById('xinda-count').textContent = shown;
+    info.textContent = '信达模式 TOP ' + shown + '（共' + (d.count||0) + '只达标）· ' + (d.scan_time||'—');
     renderXindaScan();
   }}catch(e){{
     document.getElementById('tbl-xinda-stocks').innerHTML = '<div class="loading">加载失败: '+e.message+'</div>';
@@ -746,9 +746,9 @@ async function loadBullHunter(force){{
     const url = '/api/bull_hunter_scan' + (force?'?refresh=1':'');
     const d = await fetch(url).then(x=>x.json());
     BULL_DATA = d; BULL_LOADED = true;
-    const cnt = d.count||0;
-    document.getElementById('bull-count').textContent = cnt;
-    info.textContent = '猎牛选股 ' + cnt + ' 只 · 扫描 ' + (d.total_stocks||0) + ' 只 · ' + (d.scan_time||'—');
+    const shown = (d.stocks||[]).length;
+    document.getElementById('bull-count').textContent = shown;
+    info.textContent = '猎牛选股 TOP ' + shown + '（共' + (d.count||0) + '只达标）· ' + (d.scan_time||'—');
     renderBullHunter();
   }}catch(e){{
     document.getElementById('tbl-bull-stocks').innerHTML = '<div class="loading">加载失败: '+e.message+'</div>';
