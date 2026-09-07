@@ -31,7 +31,8 @@ from signals import compute_frame, current_signal, sector_boost
 from prediction import load_predictions, load_accuracy
 from pair_scan import (load_pair_result, scan_pair_numbers,
                        load_compass_result, scan_compass_stocks,
-                       load_xinda_result, scan_xinda_stocks)
+                       load_xinda_result, scan_xinda_stocks,
+                       load_bull_hunter_result, scan_bull_hunter_stocks)
 
 app = Flask(__name__)
 
@@ -243,6 +244,14 @@ def api_xinda_scan() -> dict:
 
 
 
+@app.get("/api/bull_hunter_scan")
+def api_bull_hunter_scan() -> dict:
+    """猎牛选股（多因子综合评分）扫描。"""
+    if request.args.get("refresh") == "1":
+        return scan_bull_hunter_stocks()
+    return load_bull_hunter_result()
+
+
 # ---------------- 页面 ----------------
 
 BASE_CSS = """
@@ -350,6 +359,7 @@ OVERVIEW_TPL = f"""<!DOCTYPE html>
   <div class="tab active" onclick="switchTab('pair',event)">对子数 <span class="badge" id="pair-count"></span></div>
   <div class="tab" onclick="switchTab('compass',event)">指南针模式 <span class="badge" id="compass-count"></span></div>
   <div class="tab" onclick="switchTab('xinda',event)">信达模式 <span class="badge" id="xinda-count"></span></div>
+  <div class="tab" onclick="switchTab('bull',event)">猎牛选股 <span class="badge" id="bull-count"></span></div>
   <div class="tab" onclick="switchTab('watchlist',event)">自选股 <span class="badge" id="wl-count"></span></div>
 </div>
 <div id="tab-pair">
@@ -390,6 +400,21 @@ OVERVIEW_TPL = f"""<!DOCTYPE html>
   </div>
   <h2 style="color:#f0b90b">★ 信达模式（突破加速） <span style="font-size:13px;color:#6b7280;font-weight:400">（以600657信达地产K线形态为模型，平台突破后量价齐升）</span></h2>
   <div id="tbl-xinda-stocks"><div class="loading">点击标签加载数据...</div></div>
+</div>
+<div id="tab-bull" style="display:none">
+  <div class="scan-bar">
+    <span class="info" id="bull-info">点击「猎牛选股」标签加载数据</span>
+    <button onclick="loadBullHunter(true)">重新扫描</button>
+  </div>
+  <div style="font-size:11px;color:#8a93a6;margin:6px 0 10px;display:flex;gap:16px;flex-wrap:wrap">
+    <span><b style="color:#f0b90b">●</b> 趋势25分（MA排列+均线斜率）</span>
+    <span><b style="color:#00d4aa">●</b> 动量30分（5/10日涨幅+当日涨）</span>
+    <span><b style="color:#6ea8fe">●</b> 量能20分（量比+量价配合）</span>
+    <span><b style="color:#e879f9">●</b> 位置18分（距高点+底部距离+振幅）</span>
+    <span><b style="color:#fb923c">●</b> 质量15分（价格+流动性+成交额）</span>
+  </div>
+  <h2 style="color:#f0b90b">★ 猎牛选股（多因子综合评分） <span style="font-size:13px;color:#6b7280;font-weight:400">（满分108，≥55分入选，按总分降序）</span></h2>
+  <div id="tbl-bull-stocks"><div class="loading">点击标签加载数据...</div></div>
 </div>
 <div id="tab-watchlist" style="display:none">
   <h2>信号列表（按分数降序）</h2>
@@ -707,6 +732,64 @@ function renderXindaScan(){{
     `</table>`;
   document.getElementById('tbl-xinda-stocks').innerHTML = html;
 }}
+// ── 猎牛选股扫描 ──
+let BULL_DATA = null, BULL_LOADED = false;
+async function loadBullHunter(force){{
+  const info = document.getElementById('bull-info');
+  if(force){{
+    document.getElementById('tbl-bull-stocks').innerHTML = '<div class="loading">扫描全市场中（约3~10分钟）...</div>';
+    info.textContent = '扫描中...';
+  }}
+  try{{
+    const url = '/api/bull_hunter_scan' + (force?'?refresh=1':'');
+    const d = await fetch(url).then(x=>x.json());
+    BULL_DATA = d; BULL_LOADED = true;
+    const cnt = d.count||0;
+    document.getElementById('bull-count').textContent = cnt;
+    info.textContent = '猎牛选股 ' + cnt + ' 只 · 扫描 ' + (d.total_stocks||0) + ' 只 · ' + (d.scan_time||'—');
+    renderBullHunter();
+  }}catch(e){{
+    document.getElementById('tbl-bull-stocks').innerHTML = '<div class="loading">加载失败: '+e.message+'</div>';
+    info.textContent = '加载失败';
+  }}
+}}
+function renderBullHunter(){{
+  if(!BULL_DATA){{
+    document.getElementById('tbl-bull-stocks').innerHTML = '<div class="loading">暂无数据</div>';
+    return;
+  }}
+  const stocks = BULL_DATA.stocks || [];
+  let header = `<tr style="color:#6b7280;border-bottom:1px solid #23272f">
+    <th>#</th><th>代码</th><th>名称</th><th>总分</th>
+    <th style="color:#f0b90b">趋势</th><th style="color:#00d4aa">动量</th><th style="color:#6ea8fe">量能</th><th style="color:#e879f9">位置</th><th style="color:#fb923c">质量</th>
+    <th>5日涨%</th><th>10日涨%</th><th>量比</th><th>距高%</th><th>振幅%</th><th>操作</th></tr>`;
+  function rowHtml(s,i){{
+    const sc = s.score||0;
+    const scoreColor = sc>=80?'#f0b90b':sc>=70?'#00d4aa':sc>=60?'#6ea8fe':'#8a93a6';
+    return `<tr style="border-bottom:1px solid #1a1d27">
+      <td style="color:#6b7280">${{i+1}}</td>
+      <td><a href="/stock/${{s.code}}" style="color:#6ea8fe">${{s.code}}</a></td>
+      <td style="font-weight:600">${{s.name||'—'}}</td>
+      <td style="color:${{scoreColor}};font-weight:700;font-size:14px">${{sc}}</td>
+      <td style="color:#f0b90b">${{s.trend!=null?s.trend:'—'}}</td>
+      <td style="color:#00d4aa">${{s.momentum!=null?s.momentum:'—'}}</td>
+      <td style="color:#6ea8fe">${{s.volume!=null?s.volume:'—'}}</td>
+      <td style="color:#e879f9">${{s.position!=null?s.position:'—'}}</td>
+      <td style="color:#fb923c">${{s.trade!=null?s.trade:'—'}}</td>
+      <td style="color:#f0b90b;font-weight:700">${{s.gain_5d!=null?s.gain_5d.toFixed(1):'—'}}%</td>
+      <td>${{s.gain_10d!=null?s.gain_10d.toFixed(1):'—'}}%</td>
+      <td>${{s.vol_ratio!=null?s.vol_ratio.toFixed(2):'—'}}x</td>
+      <td>${{s.dist_high!=null?s.dist_high.toFixed(1):'—'}}%</td>
+      <td>${{s.amplitude_20d!=null?s.amplitude_20d.toFixed(1):'—'}}%</td>
+      <td><button class="scan-add" onclick="quickAdd('${{s.code}}','${{s.name}}')">+自选</button></td>
+    </tr>`;
+  }}
+  let html = `<table style="font-size:12px">${{header}}` +
+    (stocks.length ? stocks.map((s,i)=>rowHtml(s,i)).join('') :
+      `<tr><td colspan="15" style="color:#6b7280;text-align:center;padding:20px">暂无符合条件的股票</td></tr>`) +
+    `</table>`;
+  document.getElementById('tbl-bull-stocks').innerHTML = html;
+}}
 
 // ── Tab 切换 ──
 function switchTab(tab,evt){{
@@ -715,10 +798,13 @@ function switchTab(tab,evt){{
   document.getElementById('tab-pair').style.display = tab==='pair'?'block':'none';
   document.getElementById('tab-compass').style.display = tab==='compass'?'block':'none';
   document.getElementById('tab-xinda').style.display = tab==='xinda'?'block':'none';
+  document.getElementById('tab-bull').style.display = tab==='bull'?'block':'none';
   document.getElementById('tab-watchlist').style.display = tab==='watchlist'?'block':'none';
   if(tab==='pair' && !PAIR_LOADED) loadPairScan(false);
   if(tab==='compass' && !COMPASS_LOADED) loadCompassScan(false);
   if(tab==='xinda' && !XINDA_LOADED) loadXindaScan(false);
+  if(tab==='bull' && !BULL_LOADED) loadBullHunter(false);
+}}
 }}
   if(!confirm('添加 ' + code + ' ' + name + ' 到自选？')) return;
   try{{

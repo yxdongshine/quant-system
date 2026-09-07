@@ -8,6 +8,7 @@ data/market_scan.json
 data/ma_scan.json
 data/compass_scan.json
 data/xinda_scan.json
+data/bull_hunter_scan.json
 data/sector_list.json
 data/prediction_accuracy.json
 

@@ -1094,6 +1094,261 @@ def load_xinda_result() -> dict:
     return {"scan_time": "", "total_stocks": 0, "count": 0, "elapsed_sec": 0, "stocks": []}
 
 
+# ---------------- 猎牛选股（多因子综合评分） ----------------
+BULL_HUNTER_SCAN_FILE = DATA_DIR / "bull_hunter_scan.json"
+
+
+def _score_bull_hunter(df: pd.DataFrame) -> dict | None:
+    """猎牛选股多因子综合评分系统（满分108，>=55分入选）。
+
+    五大因子：
+      1. 趋势强度 (最高25分): MA多头排列 + 均线斜率
+      2. 动量得分 (最高30分): 5日/10日涨幅 + 当日涨
+      3. 量能确认 (最高20分): 量比 + 量价配合
+      4. 位置质量 (最高18分): 距高点距离 + 底部距离 + 振幅
+      5. 交易质量 (最高15分): 价格 + 流动性 + 成交额
+    """
+    if df.empty or len(df) < 20:
+        return None
+
+    close = df["close"].values
+    high = df["high"].values
+    low = df["low"].values
+    vol = df["volume"].values
+
+    c = close[-1]
+    if c <= 0:
+        return None
+
+    # --- 计算MA ---
+    sma5 = close[-5:].mean()
+    sma10 = close[-10:].mean()
+    sma20 = close[-20:].mean()
+    sma5_prev = close[-6:-1].mean()
+    sma20_prev = close[-21:-1].mean()
+
+    # --- 1. 趋势强度 (25分) ---
+    trend_score = 0
+    if c > sma5:
+        trend_score += 5
+    if sma5 > sma10:
+        trend_score += 5
+    if sma10 > sma20:
+        trend_score += 5
+    if sma5 > sma5_prev:  # sma5上升
+        trend_score += 5
+    if sma20 > sma20_prev:  # sma20上升
+        trend_score += 5
+
+    # --- 2. 动量得分 (25分) ---
+    mom_score = 0
+    gain_5d = (c / close[-6] - 1) * 100 if close[-6] > 0 else 0
+    gain_10d = (c / close[-11] - 1) * 100 if len(close) > 10 and close[-11] > 0 else 0
+    today_chg = (c / close[-2] - 1) * 100 if close[-2] > 0 else 0
+
+    if gain_5d > 3:
+        mom_score += 5
+    if gain_5d > 8:
+        mom_score += 5
+    if gain_5d > 15:
+        mom_score += 5
+    if gain_5d > 25:
+        mom_score += 5
+    if gain_10d > 5:
+        mom_score += 2
+    if gain_10d > 15:
+        mom_score += 3
+    if today_chg > 0:
+        mom_score += 5
+
+    # --- 3. 量能确认 (20分) ---
+    vol_score = 0
+    vol_today = vol[-1]
+    vol_5d_avg = vol[-5:].mean()
+    vol_20d_avg = vol[-20:].mean()
+
+    vol_ratio = vol_5d_avg / vol_20d_avg if vol_20d_avg > 0 else 0
+    vol_today_ratio = vol_today / vol_5d_avg if vol_5d_avg > 0 else 0
+
+    # 5日均量/20日均量
+    if vol_ratio > 1.2:
+        vol_score += 5
+    if vol_ratio > 1.5:
+        vol_score += 5
+    # 今日量/5日均量
+    if vol_today_ratio > 1.3:
+        vol_score += 3
+    if vol_today_ratio > 2.0:
+        vol_score += 2
+    # 5日阳线天数
+    up_days_5 = sum(1 for i in range(-5, 0) if close[i] > close[i - 1])
+    if up_days_5 >= 3:
+        vol_score += 3
+    if up_days_5 >= 4:
+        vol_score += 2
+
+    # --- 4. 位置质量 (15分) ---
+    pos_score = 0
+    high_20d = high[-20:].max()
+    low_20d = low[-20:].min()
+    dist_from_high = (high_20d - c) / high_20d * 100 if high_20d > 0 else 100
+    dist_from_low = (c - low_20d) / low_20d * 100 if low_20d > 0 else 0
+    amplitude_20d = (high_20d - low_20d) / low_20d * 100 if low_20d > 0 else 0
+
+    if dist_from_high < 5:
+        pos_score += 5
+    if dist_from_high < 3:
+        pos_score += 3
+    if dist_from_high <= 0:  # 创新高
+        pos_score += 4
+    if dist_from_low > 8:
+        pos_score += 3
+    if 10 <= amplitude_20d <= 80:
+        pos_score += 3
+
+    # --- 5. 交易质量 (15分) ---
+    trade_score = 0
+    amount_today = c * vol_today  # 近似成交额
+
+    if c > 3:
+        trade_score += 3
+    if c > 5:
+        trade_score += 2
+    if vol_20d_avg > 50000:
+        trade_score += 3
+    if vol_20d_avg > 100000:
+        trade_score += 2
+    if amount_today > 5_000_000:
+        trade_score += 3
+    if amount_today > 10_000_000:
+        trade_score += 2
+
+    total = trend_score + mom_score + vol_score + pos_score + trade_score
+    if total < 55:
+        return None
+
+    return {
+        "score": total,
+        "trend": trend_score,
+        "momentum": mom_score,
+        "volume": vol_score,
+        "position": pos_score,
+        "trade": trade_score,
+        "sma5": round(sma5, 2),
+        "sma10": round(sma10, 2),
+        "sma20": round(sma20, 2),
+        "gain_5d": round(gain_5d, 1),
+        "gain_10d": round(gain_10d, 1),
+        "vol_ratio": round(vol_ratio, 2),
+        "dist_high": round(dist_from_high, 1),
+        "amplitude_20d": round(amplitude_20d, 1),
+    }
+
+
+def _scan_one_bull_stock(args: tuple[int, dict, dict[str, dict]]) -> dict | None:
+    idx, stock, stock_dict = args
+    code = stock.get("f12", "")
+    name = stock.get("f14", "")
+    if not code or not name:
+        return None
+
+    # 跳过ST
+    if "ST" in name.upper() or "S" in name.upper() and name.startswith("S"):
+        return None
+
+    df = _fetch_kline(code, days=30)
+    if df.empty or len(df) < 20:
+        return None
+
+    scores = _score_bull_hunter(df)
+    if not scores:
+        return None
+
+    info = stock_dict.get(code, {})
+    return {
+        "code": code,
+        "name": name,
+        "price": info.get("price"),
+        "change_pct": info.get("change_pct"),
+        "amount": info.get("amount"),
+        **scores,
+    }
+
+
+def scan_bull_hunter_stocks() -> dict:
+    """全市场猎牛选股（多因子综合评分）—— 找到真正的强者。"""
+    _api_down.clear()
+    if not _probe_api():
+        _api_down.set()
+        print("[bull_hunter] ⚠ 数据 API 不可用，仅使用本地缓存")
+    print("[bull_hunter] 开始全市场猎牛选股扫描...")
+    t0 = time.time()
+
+    stocks = _fetch_all_stocks()
+    stock_dict = {}
+    for s in stocks:
+        code = s.get("f12", "")
+        price = _em_price(s.get("f2"))
+        chg = _sf(s.get("f3"))
+        amt = _sf(s.get("f6"))
+        stock_dict[code] = {"price": price, "change_pct": chg, "amount": amt}
+
+    results: list[dict] = []
+    done_n = 0
+
+    def _on_done(fut):
+        nonlocal done_n
+        done_n += 1
+        if done_n % 500 == 0:
+            print(f"[bull_hunter] 扫描进度: {done_n}/{len(stocks)}")
+        try:
+            res = fut.result()
+            if res:
+                results.append(res)
+        except Exception as e:
+            print(f"[bull_hunter] 单只股票扫描异常: {e}")
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = []
+        for idx, stock in enumerate(stocks):
+            fut = pool.submit(_scan_one_bull_stock, (idx, stock, stock_dict))
+            fut.add_done_callback(_on_done)
+            futures.append(fut)
+        for fut in futures:
+            fut.result()
+
+    # 按评分降序排列
+    results.sort(key=lambda x: x.get("score", 0), reverse=True)
+
+    elapsed = time.time() - t0
+    result = {
+        "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "total_stocks": len(stocks),
+        "count": len(results),
+        "elapsed_sec": round(elapsed, 1),
+        "stocks": results[:100],  # 取前100只
+    }
+    save_bull_hunter_result(result)
+    print(f"[bull_hunter] 扫描完成，耗时 {elapsed:.1f}s，符合条件的股票: {len(results)} 只（展示前100只）")
+    return result
+
+
+def save_bull_hunter_result(data: dict) -> None:
+    BULL_HUNTER_SCAN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(BULL_HUNTER_SCAN_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def load_bull_hunter_result() -> dict:
+    if BULL_HUNTER_SCAN_FILE.exists():
+        try:
+            with open(BULL_HUNTER_SCAN_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"scan_time": "", "total_stocks": 0, "count": 0, "elapsed_sec": 0, "stocks": []}
+
+
 if __name__ == "__main__":
     result = scan_pair_numbers()
     print(f"\n{'='*60}")
