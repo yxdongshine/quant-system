@@ -30,7 +30,6 @@ from datafeed import get_daily, get_quotes, search_stock
 from signals import compute_frame, current_signal, sector_boost
 from prediction import load_predictions, load_accuracy
 from pair_scan import (load_pair_result, scan_pair_numbers,
-                       load_compass_result, scan_compass_stocks,
                        load_xinda_result, scan_xinda_stocks,
                        load_bull_hunter_result, scan_bull_hunter_stocks)
 
@@ -227,14 +226,6 @@ def api_pair_scan() -> dict:
     return load_pair_result()
 
 
-@app.get("/api/compass_scan")
-def api_compass_scan() -> dict:
-    """指南针模式（空中加油/高位整理蓄势）扫描。"""
-    if request.args.get("refresh") == "1":
-        return scan_compass_stocks()
-    return load_compass_result()
-
-
 @app.get("/api/xinda_scan")
 def api_xinda_scan() -> dict:
     """信达模式（突破加速/量价齐升）扫描。"""
@@ -357,7 +348,6 @@ OVERVIEW_TPL = f"""<!DOCTYPE html>
 </div>
 <div class="tabs">
   <div class="tab active" onclick="switchTab('pair',event)">对子数 <span class="badge" id="pair-count"></span></div>
-  <div class="tab" onclick="switchTab('compass',event)">指南针模式 <span class="badge" id="compass-count"></span></div>
   <div class="tab" onclick="switchTab('xinda',event)">信达模式 <span class="badge" id="xinda-count"></span></div>
   <div class="tab" onclick="switchTab('bull',event)">猎牛选股 <span class="badge" id="bull-count"></span></div>
   <div class="tab" onclick="switchTab('watchlist',event)">自选股 <span class="badge" id="wl-count"></span></div>
@@ -374,19 +364,6 @@ OVERVIEW_TPL = f"""<!DOCTYPE html>
   </div>
   <h2 style="color:#f0b90b">★ 强支撑对子 <span style="font-size:13px;color:#6b7280;font-weight:400">（收盘形成且未破≥3天 → 主力强支撑，重点信号）</span></h2>
   <div id="tbl-strong-pairs"><div class="loading">点击标签加载数据...</div></div>
-</div>
-<div id="tab-compass" style="display:none">
-  <div class="scan-bar">
-    <span class="info" id="compass-info">点击「指南针模式」标签加载数据</span>
-    <button onclick="loadCompassScan(true)">重新扫描</button>
-  </div>
-  <div style="font-size:11px;color:#8a93a6;margin:6px 0 10px;display:flex;gap:16px;flex-wrap:wrap">
-    <span><b style="color:#f0b90b">●</b> 长期趋势向上（>MA60）</span>
-    <span><b style="color:#00d4aa">●</b> 近20日振幅≥8%</span>
-    <span><b style="color:#6ea8fe">●</b> 高位整理+长影线密集</span>
-  </div>
-  <h2 style="color:#f0b90b">★ 指南针模式（空中加油） <span style="font-size:13px;color:#6b7280;font-weight:400">（以300803指南针K线形态为模型，高位整理蓄势）</span></h2>
-  <div id="tbl-compass-stocks"><div class="loading">点击标签加载数据...</div></div>
 </div>
 <div id="tab-xinda" style="display:none">
   <div class="scan-bar">
@@ -614,67 +591,6 @@ function renderPairScan(){{
   document.getElementById('tbl-strong-pairs').innerHTML = htmlS;
 }}
 
-let COMPASS_DATA = null;
-let COMPASS_LOADED = false;
-
-async function loadCompassScan(force){{
-  const info = document.getElementById('compass-info');
-  if(force){{
-    document.getElementById('tbl-compass-stocks').innerHTML = '<div class="loading">扫描全市场中（约3~10分钟）...</div>';
-    info.textContent = '扫描中...';
-  }}
-  try{{
-    const url = '/api/compass_scan' + (force?'?refresh=1':'');
-    const d = await fetch(url).then(x=>x.json());
-    COMPASS_DATA = d;
-    COMPASS_LOADED = true;
-    const shown = (d.stocks||[]).length;
-    document.getElementById('compass-count').textContent = shown;
-    info.textContent = '指南针模式 TOP ' + shown + '（共' + (d.count||0) + '只达标）· ' + (d.scan_time||'—');
-    renderCompassScan();
-  }}catch(e){{
-    document.getElementById('tbl-compass-stocks').innerHTML = '<div class="loading">加载失败: '+e.message+'</div>';
-    info.textContent = '加载失败';
-  }}
-}}
-
-function renderCompassScan(){{
-  if(!COMPASS_DATA){{
-    document.getElementById('tbl-compass-stocks').innerHTML = '<div class="loading">暂无数据</div>';
-    return;
-  }}
-  const stocks = COMPASS_DATA.stocks || [];
-  const header = `<tr><th>#</th><th>代码</th><th>名称</th><th style="color:#f0b90b">评分</th><th>现价</th><th>涨跌幅</th><th>成交额(亿)</th>
-    <th>MA5</th><th>MA10</th><th>MA20</th><th>MA60</th><th>20日振幅</th><th>长影线日</th><th>操作</th></tr>`;
-  function rowHtml(s, i){{
-    const close = s.price!=null ? s.price.toFixed(2) : '—';
-    const chg = s.change_pct!=null ? (s.change_pct>=0?'+':'')+s.change_pct.toFixed(2)+'%' : '—';
-    const chgColor = s.change_pct!=null && s.change_pct>=0 ? '#e74c3c' : '#27ae60';
-    const amt = s.amount!=null ? (s.amount/1e8).toFixed(2) : '—';
-    return `<tr>
-      <td style="color:#6b7280;font-weight:700">${{i+1}}</td>
-      <td><a href="/stock/${{s.code}}" style="color:#6ea8fe">${{s.code}}</a></td>
-      <td style="font-weight:600">${{s.name}}</td>
-      <td style="color:#f0b90b;font-weight:700;font-size:14px">${{s.score!=null?s.score:'—'}}</td>
-      <td>${{close}}</td>
-      <td style="color:${{chgColor}}">${{chg}}</td>
-      <td style="color:#8a93a6">${{amt}}</td>
-      <td style="color:#f0b90b">${{s.sma5!=null?s.sma5.toFixed(2):'—'}}</td>
-      <td style="color:#00d4aa">${{s.sma10!=null?s.sma10.toFixed(2):'—'}}</td>
-      <td style="color:#6ea8fe">${{s.sma20!=null?s.sma20.toFixed(2):'—'}}</td>
-      <td style="color:#8a93a6">${{s.sma60!=null?s.sma60.toFixed(2):'—'}}</td>
-      <td style="color:#f0b90b;font-weight:700">${{s.amplitude_20d!=null?s.amplitude_20d.toFixed(2):'—'}}%</td>
-      <td style="color:#00d4aa">${{s.long_shadow_days!=null?s.long_shadow_days:'—'}}</td>
-      <td><button class="scan-add" onclick="quickAdd('${{s.code}}','${{s.name}}')">+自选</button></td>
-    </tr>`;
-  }}
-  let html = `<table style="font-size:12px">${{header}}` +
-    (stocks.length ? stocks.map((s,i)=>rowHtml(s,i)).join('') :
-      `<tr><td colspan="15" style="color:#6b7280;text-align:center;padding:20px">暂无符合条件的股票</td></tr>`) +
-    `</table>`;
-  document.getElementById('tbl-compass-stocks').innerHTML = html;
-}}
-
 // ── 信达模式扫描 ──
 let XINDA_DATA = null, XINDA_LOADED = false;
 async function loadXindaScan(force){{
@@ -798,12 +714,10 @@ function switchTab(tab,evt){{
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   evt.currentTarget.classList.add('active');
   document.getElementById('tab-pair').style.display = tab==='pair'?'block':'none';
-  document.getElementById('tab-compass').style.display = tab==='compass'?'block':'none';
   document.getElementById('tab-xinda').style.display = tab==='xinda'?'block':'none';
   document.getElementById('tab-bull').style.display = tab==='bull'?'block':'none';
   document.getElementById('tab-watchlist').style.display = tab==='watchlist'?'block':'none';
   if(tab==='pair' && !PAIR_LOADED) loadPairScan(false);
-  if(tab==='compass' && !COMPASS_LOADED) loadCompassScan(false);
   if(tab==='xinda' && !XINDA_LOADED) loadXindaScan(false);
   if(tab==='bull' && !BULL_LOADED) loadBullHunter(false);
 }}
