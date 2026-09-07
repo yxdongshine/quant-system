@@ -644,7 +644,7 @@ function renderCompassScan(){{
     return;
   }}
   const stocks = COMPASS_DATA.stocks || [];
-  const header = `<tr><th>#</th><th>代码</th><th>名称</th><th>现价</th><th>涨跌幅</th><th>成交额(亿)</th>
+  const header = `<tr><th>#</th><th>代码</th><th>名称</th><th style="color:#f0b90b">评分</th><th>现价</th><th>涨跌幅</th><th>成交额(亿)</th>
     <th>MA5</th><th>MA10</th><th>MA20</th><th>MA60</th><th>20日振幅</th><th>长影线日</th><th>操作</th></tr>`;
   function rowHtml(s, i){{
     const close = s.price!=null ? s.price.toFixed(2) : '—';
@@ -655,6 +655,7 @@ function renderCompassScan(){{
       <td style="color:#6b7280;font-weight:700">${{i+1}}</td>
       <td><a href="/stock/${{s.code}}" style="color:#6ea8fe">${{s.code}}</a></td>
       <td style="font-weight:600">${{s.name}}</td>
+      <td style="color:#f0b90b;font-weight:700;font-size:14px">${{s.score!=null?s.score:'—'}}</td>
       <td>${{close}}</td>
       <td style="color:${{chgColor}}">${{chg}}</td>
       <td style="color:#8a93a6">${{amt}}</td>
@@ -669,7 +670,7 @@ function renderCompassScan(){{
   }}
   let html = `<table style="font-size:12px">${{header}}` +
     (stocks.length ? stocks.map((s,i)=>rowHtml(s,i)).join('') :
-      `<tr><td colspan="13" style="color:#6b7280;text-align:center;padding:20px">暂无符合条件的股票</td></tr>`) +
+      `<tr><td colspan="15" style="color:#6b7280;text-align:center;padding:20px">暂无符合条件的股票</td></tr>`) +
     `</table>`;
   document.getElementById('tbl-compass-stocks').innerHTML = html;
 }}
@@ -703,7 +704,7 @@ function renderXindaScan(){{
   }}
   let stocks = XINDA_DATA.stocks||[];
   const header = `<tr style="color:#8a93a6;font-size:11px">
-    <th>#</th><th>代码</th><th>名称</th><th>现价</th><th>涨跌%</th><th>成交额(亿)</th>
+    <th>#</th><th>代码</th><th>名称</th><th style="color:#f0b90b">评分</th><th>现价</th><th>涨跌%</th><th>成交额(亿)</th>
     <th>MA5</th><th>MA10</th><th>MA20</th><th>5日涨幅%</th><th>阳线天</th>
     <th>20日振幅%</th><th>量比</th><th>操作</th></tr>`;
   function rowHtml(s,i){{
@@ -713,7 +714,8 @@ function renderXindaScan(){{
       <td>${{i+1}}</td>
       <td><a href="/stock/${{s.code}}" style="color:#6ea8fe">${{s.code}}</a></td>
       <td>${{s.name}}</td>
-      <td style="color:#f0b90b;font-weight:700">${{s.price!=null?s.price.toFixed(2):'—'}}</td>
+      <td style="color:#f0b90b;font-weight:700;font-size:14px">${{s.score!=null?s.score:'—'}}</td>
+      <td style="color:#f0b90b">${{s.price!=null?s.price.toFixed(2):'—'}}</td>
       <td style="color:${{chg>=0?'#00d4aa':'#f6465d'}}">${{chg}}%</td>
       <td>${{amt}}</td>
       <td style="color:#f0b90b">${{s.sma5!=null?s.sma5.toFixed(2):'—'}}</td>

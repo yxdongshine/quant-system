@@ -818,14 +818,20 @@ def _check_compass_pattern(df: pd.DataFrame) -> dict | None:
     if cv >= 0.04:
         return None
 
+    # 综合评分：振幅(能量) + 长影线(支撑测试) + 窄幅整理(蓄势度)
+    long_shadow_days = int(recent5["is_long_shadow"].sum())
+    amplitude_pct = round(amplitude * 100, 2)
+    cv_pct = round(cv * 100, 2)
+    score = round(amplitude_pct + long_shadow_days * 3 + max(0, 5 - cv_pct) * 2, 1)
     return {
+        "score": score,
         "sma5": round(cur["sma5"], 2),
         "sma10": round(cur["sma10"], 2),
         "sma20": round(cur["sma20"], 2),
         "sma60": round(cur["sma60"], 2),
-        "amplitude_20d": round(amplitude * 100, 2),
-        "cv_5d": round(cv * 100, 2),
-        "long_shadow_days": int(recent5["is_long_shadow"].sum()),
+        "amplitude_20d": amplitude_pct,
+        "cv_5d": cv_pct,
+        "long_shadow_days": long_shadow_days,
     }
 
 
@@ -894,16 +900,19 @@ def scan_compass_stocks() -> dict:
         for fut in futures:
             fut.result()
 
+    # 按评分降序排列，仅保留 TOP 10
+    results.sort(key=lambda x: x.get("score", 0), reverse=True)
+
     elapsed = time.time() - t0
     result = {
         "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "total_stocks": len(stocks),
         "count": len(results),
         "elapsed_sec": round(elapsed, 1),
-        "stocks": results,
+        "stocks": results[:10],  # 仅保留 TOP 10
     }
     save_compass_result(result)
-    print(f"[compass_scan] 扫描完成，耗时 {elapsed:.1f}s，符合条件的股票: {len(results)} 只")
+    print(f"[compass_scan] 扫描完成，耗时 {elapsed:.1f}s，符合条件的股票: {len(results)} 只（展示前10只）")
     return result
 
 
@@ -989,14 +998,20 @@ def _check_xinda_pattern(df: pd.DataFrame) -> dict | None:
     if amplitude < 0.18:
         return None
 
+    gain_5d_pct = round(gain_5d * 100, 2)
+    amplitude_pct = round(amplitude * 100, 2)
+    vol_r = round(vol_5d / vol_20d, 2)
+    # 综合评分：涨幅(突破力度) + 量比(资金确认) + 阳线天数(买盘) + 振幅(活跃度)
+    score = round(gain_5d_pct + vol_r * 5 + up_days * 3 + amplitude_pct * 0.2, 1)
     return {
+        "score": score,
         "sma5": round(cur["sma5"], 2),
         "sma10": round(cur["sma10"], 2),
         "sma20": round(cur["sma20"], 2),
-        "gain_5d": round(gain_5d * 100, 2),
+        "gain_5d": gain_5d_pct,
         "up_days": int(up_days),
-        "amplitude_20d": round(amplitude * 100, 2),
-        "vol_ratio": round(vol_5d / vol_20d, 2),
+        "amplitude_20d": amplitude_pct,
+        "vol_ratio": vol_r,
     }
 
 
@@ -1065,16 +1080,19 @@ def scan_xinda_stocks() -> dict:
         for fut in futures:
             fut.result()
 
+    # 按评分降序排列，仅保留 TOP 10
+    results.sort(key=lambda x: x.get("score", 0), reverse=True)
+
     elapsed = time.time() - t0
     result = {
         "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "total_stocks": len(stocks),
         "count": len(results),
         "elapsed_sec": round(elapsed, 1),
-        "stocks": results,
+        "stocks": results[:10],  # 仅保留 TOP 10
     }
     save_xinda_result(result)
-    print(f"[xinda_scan] 扫描完成，耗时 {elapsed:.1f}s，符合条件的股票: {len(results)} 只")
+    print(f"[xinda_scan] 扫描完成，耗时 {elapsed:.1f}s，符合条件的股票: {len(results)} 只（展示前10只）")
     return result
 
 
@@ -1326,10 +1344,10 @@ def scan_bull_hunter_stocks() -> dict:
         "total_stocks": len(stocks),
         "count": len(results),
         "elapsed_sec": round(elapsed, 1),
-        "stocks": results[:100],  # 取前100只
+        "stocks": results[:10],  # 仅保留 TOP 10
     }
     save_bull_hunter_result(result)
-    print(f"[bull_hunter] 扫描完成，耗时 {elapsed:.1f}s，符合条件的股票: {len(results)} 只（展示前100只）")
+    print(f"[bull_hunter] 扫描完成，耗时 {elapsed:.1f}s，符合条件的股票: {len(results)} 只（展示前10只）")
     return result
 
 
